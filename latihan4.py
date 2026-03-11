@@ -17,9 +17,8 @@ LOGO_URL = "https://th.bing.com/th/id/R.7845becf994d6c6a0b2afe8147ecbbf4?rik=l%2
 
 # 2. SISTEM LOGIN (3 User, 1 Password)
 def load_users():
-    # Daftar 3 user dengan password yang sama
     usernames = ["ASYRAAF", "1", "2"]
-    password_tetap = "ADMIN1234"
+    password_tetap = "admin1234"
     return {u: password_tetap for u in usernames}
 
 if "user_db" not in st.session_state:
@@ -34,8 +33,8 @@ def auth_interface():
     with col2:
         st.markdown(f"<div style='text-align: center;'><br><img src='{LOGO_URL}' width='80'><h2>Sistem Geomatik PUO</h2><p>Sila log masuk untuk mula</p></div>", unsafe_allow_html=True)
         with st.form("login_form"):
-            u_id = st.text_input("").upper()
-            u_pw = st.text_input("Kata Laluan", type="password")
+            u_id = st.text_input("ID PENGGUNA").upper()
+            u_pw = st.text_input("KATA LALUAN", type="password")
             if st.form_submit_button("Masuk", use_container_width=True):
                 if u_id in st.session_state["user_db"] and st.session_state["user_db"][u_id] == u_pw:
                     st.session_state["logged_in"] = True
@@ -87,7 +86,7 @@ if uploaded_file:
         tf = get_transformer(epsg_input)
         
         if tf:
-            # Adjust coordinates with offset
+            # Adjust coordinates
             df_mod = df.copy()
             df_mod['E_adj'], df_mod['N_adj'] = df_mod['E'] + off_e, df_mod['N'] + off_n
             lons, lats = tf.transform(df_mod['E_adj'].values, df_mod['N_adj'].values)
@@ -96,94 +95,75 @@ if uploaded_file:
             # Kira Luas
             area_m2 = Polygon(zip(df['E'], df['N'])).area
             
-            # Paparan Peta
+            # --- KONFIGURASI PETA DENGAN LAYER CONTROL ---
             m = folium.Map(location=[df['lat'].mean(), df['lon'].mean()], zoom_start=20, max_zoom=24)
+
+            # Layer Base: Satelit
             folium.TileLayer(
                 tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", 
-                attr="Google Satellite", 
-                max_zoom=24,
-                name="Satelit"
+                attr="Google Satellite", max_zoom=24, name="Google Satelit"
             ).add_to(m)
-            
-            # Poligon Lot
+
+            # Layer Base: Jalan
+            folium.TileLayer(
+                tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", 
+                attr="Google Roadmap", max_zoom=24, name="Google Jalan"
+            ).add_to(m)
+
+            # Feature Groups (Untuk On/Off)
+            fg_lot = folium.FeatureGroup(name="Sempadan Lot (Poligon)")
+            fg_labels = folium.FeatureGroup(name="Label Bering & Jarak")
+            fg_stesen = folium.FeatureGroup(name="Marker Stesen")
+
+            # Tambah Poligon
             lot_html = f"<b>Info Lot</b><br>Luas: {area_m2:.3f} m²<br>Surveyor: {st.session_state['current_user']}"
             folium.Polygon(
                 df[['lat', 'lon']].values.tolist(), 
-                color="yellow", 
-                fill=True, 
-                fill_opacity=0.2, 
-                weight=3, 
+                color="yellow", fill=True, fill_opacity=0.2, weight=3, 
                 popup=folium.Popup(lot_html, max_width=200)
-            ).add_to(m)
+            ).add_to(fg_lot)
 
             points_for_geojson = []
             for i in range(len(df)):
-                p1 = df.iloc[i]
-                p2 = df.iloc[(i+1)%len(df)]
+                p1, p2 = df.iloc[i], df.iloc[(i+1)%len(df)]
                 brg, dist, rot = kira_data_garisan(p1, p2)
                 
-                # Popup Stesen
-                stn_popup_html = f"""
-                <div style="font-family: Arial; width: 160px;">
-                    <b style="color:red;">📍 STESEN {p1['STN']}</b><br><hr style="margin:5px 0;">
-                    <b>E:</b> {p1['E']:.3f}<br>
-                    <b>N:</b> {p1['N']:.3f}<br>
-                    <b>Ke STN {p2['STN']}:</b><br>
-                    Bering: {brg}<br>
-                    Jarak: {dist}m
-                </div>
-                """
-                
+                # Marker Stesen
                 folium.CircleMarker(
                     location=[p1['lat'], p1['lon']],
-                    radius=5,
-                    color="white",
-                    weight=2,
-                    fill=True,
-                    fill_color="red",
-                    fill_opacity=1,
-                    popup=folium.Popup(stn_popup_html, max_width=200),
-                    tooltip=f"STN {p1['STN']}"
-                ).add_to(m)
+                    radius=5, color="white", weight=2, fill=True, fill_color="red", fill_opacity=1,
+                    popup=f"STN {p1['STN']}"
+                ).add_to(fg_stesen)
                 
-                # Label Bering & Jarak
+                # Label Bering/Jarak
                 mid_lat, mid_lon = (p1['lat']+p2['lat'])/2, (p1['lon']+p2['lon'])/2
                 html_label = f"""<div style="transform: rotate({rot}deg); white-space: nowrap; font-size: 7pt; color: #00FF00; font-weight: bold; text-shadow: 1px 1px 2px black; text-align: center; width: 80px; margin-left: -40px;">{brg}<br>{dist}m</div>"""
-                folium.Marker([mid_lat, mid_lon], icon=folium.DivIcon(html=html_label)).add_to(m)
+                folium.Marker([mid_lat, mid_lon], icon=folium.DivIcon(html=html_label)).add_to(fg_labels)
 
                 points_for_geojson.append({
                     'geometry': Point(p1['lon'], p1['lat']),
                     'STN': str(p1['STN']),
-                    'E_Asal': p1['E'], 'N_Asal': p1['N'],
-                    'Bering_Next': brg, 'Jarak_Next': dist
+                    'E_Asal': p1['E'], 'N_Asal': p1['N']
                 })
 
-            # Download GeoJSON
-            gdf_pts = gpd.GeoDataFrame(points_for_geojson, crs="EPSG:4326")
-            poly_geom = Polygon(zip(df['lon'], df['lat']))
-            gdf_poly = gpd.GeoDataFrame({'STN': ['LOT_UTAMA'], 'Luas_m2': [round(area_m2,3)]}, geometry=[poly_geom], crs="EPSG:4326")
-            geojson_out = pd.concat([gdf_poly, gdf_pts], ignore_index=True).to_json()
-            
-            st.sidebar.download_button(
-                label="💾 Muat Turun GeoJSON", 
-                data=geojson_out, 
-                file_name=f"Lot_{st.session_state['current_user']}.geojson",
-                mime="application/json"
-            )
+            # Masukkan semua Group ke dalam Peta
+            fg_lot.add_to(m)
+            fg_stesen.add_to(m)
+            fg_labels.add_to(m)
 
-            # Main Display
+            # TAMBAH SUIS ON/OFF
+            folium.LayerControl(collapsed=False).add_to(m)
+
+            # Papar Peta
             st_folium(m, width="100%", height=600, returned_objects=[])
             
-            col1, col2 = st.columns(2)
-            col1.metric("Luas (m²)", f"{area_m2:.3f}")
-            col2.metric("Jumlah Stesen", len(df))
-            
-            st.subheader("Data Koordinat")
+            # Eksport & Data
+            st.metric("Luas (m²)", f"{area_m2:.3f}")
             st.dataframe(df[['STN', 'E', 'N', 'lat', 'lon']], use_container_width=True)
 
         else:
-            st.error("EPSG Error: Sila masukkan kod yang sah.")
+            st.error("Kod EPSG salah.")
     except Exception as e:
-        st.error(f"Ralat: Pastikan CSV mempunyai kolum STN, E, N. ({e})")
+        st.error(f"Ralat: {e}")
 else:
-    st.info("Sila muat naik fail CSV di sidebar untuk melihat plot pelan.")
+    st.info("Sila muat naik CSV untuk mula.")
