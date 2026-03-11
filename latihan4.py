@@ -17,7 +17,7 @@ LOGO_URL = "https://th.bing.com/th/id/R.7845becf994d6c6a0b2afe8147ecbbf4?rik=l%2
 
 # 2. SISTEM LOGIN (3 User, 1 Password)
 def load_users():
-    usernames = ["ASYRAAF", "1", "2"]
+    usernames = ["ASYRAAF", "1", "2","jojo"]
     password_tetap = "admin1234"
     return {u: password_tetap for u in usernames}
 
@@ -167,3 +167,4 @@ if uploaded_file:
         st.error(f"Ralat: {e}")
 else:
     st.info("Sila muat naik CSV untuk mula.")
+
