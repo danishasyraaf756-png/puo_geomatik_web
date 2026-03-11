@@ -6,7 +6,7 @@ from streamlit_folium import st_folium
 import math
 from pyproj import Transformer
 import geopandas as gpd
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon, Point, LineString
 import json
 
 # 1. KONFIGURASI HALAMAN
@@ -50,7 +50,6 @@ if not st.session_state["logged_in"]:
 @st.cache_resource
 def get_transformer(epsg):
     try:
-        # Menukar koordinat tempatan (RSO/Cassini) kepada WGS84 (Lat/Lon)
         return Transformer.from_crs(f"epsg:{epsg}", "epsg:4326", always_xy=True)
     except:
         return None
@@ -60,13 +59,13 @@ def kira_data_garisan(p1, p2):
     dist = math.sqrt(de**2 + dn**2)
     angle = math.degrees(math.atan2(de, dn)) % 360
     
-    # Tukar kepada format DMS (Degree, Minute, Second)
+    # Format DMS
     d = int(angle)
     m = int((angle - d) * 60)
     s = int((((angle - d) * 60) - m) * 60)
     brg_str = f"{d:03d}°{m:02d}'{s:02d}\""
     
-    # Sudut rotasi untuk label teks pada peta
+    # Rotasi teks
     rot_angle = angle - 90
     if 90 < angle < 270: rot_angle += 180
     return brg_str, round(dist, 3), rot_angle
@@ -92,106 +91,72 @@ if uploaded_file:
         tf = get_transformer(epsg_input)
         
         if tf:
-            # Penyelarasan koordinat dengan offset
             df_mod = df.copy()
             df_mod['E_adj'], df_mod['N_adj'] = df_mod['E'] + off_e, df_mod['N'] + off_n
             lons, lats = tf.transform(df_mod['E_adj'].values, df_mod['N_adj'].values)
             df['lat'], df['lon'] = lats, lons
             
-            # Kira Luas menggunakan Shoelace Formula melalui Shapely
             area_m2 = Polygon(zip(df['E'], df['N'])).area
             
             # --- KONFIGURASI PETA ---
             m = folium.Map(location=[df['lat'].mean(), df['lon'].mean()], zoom_start=19, max_zoom=24)
+            folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", attr="Google Satellite", name="Google Satelit", max_zoom=24).add_to(m)
+            folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", attr="Google Roadmap", name="Google Jalan", max_zoom=24).add_to(m)
 
-            # Layer Base
-            folium.TileLayer(
-                tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", 
-                attr="Google Satellite", max_zoom=24, name="Google Satelit"
-            ).add_to(m)
-
-            folium.TileLayer(
-                tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", 
-                attr="Google Roadmap", max_zoom=24, name="Google Jalan"
-            ).add_to(m)
-
-            # Kumpulan Ciri (Feature Groups)
             fg_lot = folium.FeatureGroup(name="Sempadan Lot (Poligon)")
             fg_labels = folium.FeatureGroup(name="Label Bering & Jarak")
             fg_stesen = folium.FeatureGroup(name="Marker Stesen")
 
-            # Tambah Poligon Lot
-            lot_html = f"<b>Info Lot</b><br>Luas: {area_m2:.3f} m²<br>Surveyor: {st.session_state['current_user']}"
-            folium.Polygon(
-                df[['lat', 'lon']].values.tolist(), 
-                color="yellow", fill=True, fill_opacity=0.2, weight=3, 
-                popup=folium.Popup(lot_html, max_width=200)
-            ).add_to(fg_lot)
+            # Data untuk GeoJSON
+            points_data = []
+            lines_data = []
 
-            points_for_geojson = []
             for i in range(len(df)):
-                p1 = df.iloc[i]
-                p2 = df.iloc[(i+1)%len(df)]
+                p1, p2 = df.iloc[i], df.iloc[(i+1)%len(df)]
                 brg, dist, rot = kira_data_garisan(p1, p2)
                 
-                # Marker Stesen (Bulatan Merah)
-                folium.CircleMarker(
-                    location=[p1['lat'], p1['lon']],
-                    radius=6, color="white", weight=2, fill=True, fill_color="red", fill_opacity=1,
-                    popup=f"<b>STN {p1['STN']}</b><br>E: {p1['E']}<br>N: {p1['N']}"
-                ).add_to(fg_stesen)
-                
-                # Label Bering & Jarak di tengah garisan
+                # Visualisasi Poligon & Label
                 mid_lat, mid_lon = (p1['lat']+p2['lat'])/2, (p1['lon']+p2['lon'])/2
                 html_label = f"""<div style="transform: rotate({rot}deg); white-space: nowrap; font-size: 8pt; color: #00FF00; font-weight: bold; text-shadow: 1px 1px 2px black; text-align: center; width: 100px; margin-left: -50px;">{brg}<br>{dist}m</div>"""
                 folium.Marker([mid_lat, mid_lon], icon=folium.DivIcon(html=html_label)).add_to(fg_labels)
+                
+                folium.CircleMarker(location=[p1['lat'], p1['lon']], radius=6, color="white", weight=2, fill=True, fill_color="red", fill_opacity=1, popup=f"STN {p1['STN']}").add_to(fg_stesen)
 
-                # Data untuk GeoJSON
-                points_for_geojson.append({
-                    'geometry': Point(p1['lon'], p1['lat']),
-                    'STN': str(p1['STN']),
-                    'E_Asal': p1['E'], 'N_Asal': p1['N'],
-                    'Bering_Ke_Next': brg, 'Jarak_Ke_Next': dist
-                })
+                # Simpan Data GIS
+                points_data.append({'geometry': Point(p1['lon'], p1['lat']), 'STN': str(p1['STN']), 'E': p1['E'], 'N': p1['N'], 'Jenis': 'Stesen'})
+                lines_data.append({'geometry': LineString([(p1['lon'], p1['lat']), (p2['lon'], p2['lat'])]), 'Dari': str(p1['STN']), 'Ke': str(p2['STN']), 'Bering': brg, 'Jarak_m': dist, 'Jenis': 'Line_Traverse'})
 
-            # Masukkan semua lapisan ke dalam peta
-            fg_lot.add_to(m)
-            fg_stesen.add_to(m)
-            fg_labels.add_to(m)
+            folium.Polygon(df[['lat', 'lon']].values.tolist(), color="yellow", fill=True, fill_opacity=0.2, weight=3).add_to(fg_lot)
+            
+            fg_lot.add_to(m); fg_stesen.add_to(m); fg_labels.add_to(m)
             folium.LayerControl(collapsed=False).add_to(m)
 
-            # PAPARAN UTAMA
-            st.title("🗺️ Pelan Geomatik Interaktif")
+            # PAPARAN
+            st.title("🗺️ PUO Geomatics Pro")
             st_folium(m, width="100%", height=600, returned_objects=[])
             
-            # Statistik Ringkas
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Luas (m²)", f"{area_m2:.3f}")
-            c2.metric("Luas (Ekar)", f"{(area_m2 * 0.000247105):.4f}")
-            c3.metric("Bilangan Stesen", len(df))
-
-            # --- EKSPORT DATA GEOJSON ---
+            # --- EKSPORT & JADUAL ---
             st.divider()
-            st.subheader("📥 Eksport & Jadual Data")
+            col_a, col_b = st.columns([1, 2])
             
-            # Bina fail GeoJSON
-            gdf_pts = gpd.GeoDataFrame(points_for_geojson, crs="EPSG:4326")
-            poly_geom = Polygon(zip(df['lon'], df['lat']))
-            gdf_poly = gpd.GeoDataFrame({'STN': ['POLYGON_LOT'], 'Luas_m2': [round(area_m2,3)]}, geometry=[poly_geom], crs="EPSG:4326")
-            geojson_out = pd.concat([gdf_poly, gdf_pts], ignore_index=True).to_json()
+            with col_a:
+                st.subheader("📥 Eksport Fail")
+                gdf_pts = gpd.GeoDataFrame(points_data, crs="EPSG:4326")
+                gdf_lines = gpd.GeoDataFrame(lines_data, crs="EPSG:4326")
+                gdf_poly = gpd.GeoDataFrame({'STN': ['LOT_UTAMA'], 'Luas_m2': [round(area_m2,3)], 'Jenis': ['Poligon_Lot']}, geometry=[Polygon(zip(df['lon'], df['lat']))], crs="EPSG:4326")
+                
+                final_geojson = pd.concat([gdf_poly, gdf_lines, gdf_pts], ignore_index=True).to_json()
+                
+                st.download_button(label="💾 Muat Turun GeoJSON (PRO)", data=final_geojson, file_name=f"Geomatics_{st.session_state['current_user']}.geojson", mime="application/json")
+                st.metric("Luas (m²)", f"{area_m2:.3f}")
 
-            st.download_button(
-                label="💾 Muat Turun GeoJSON (GIS Ready)", 
-                data=geojson_out, 
-                file_name=f"Survey_Lot_{st.session_state['current_user']}.geojson",
-                mime="application/json"
-            )
-
-            st.dataframe(df[['STN', 'E', 'N', 'lat', 'lon']].style.format(precision=3), use_container_width=True)
+            with col_b:
+                st.subheader("📊 Data Sempadan")
+                st.dataframe(gdf_lines[['Dari', 'Ke', 'Bering', 'Jarak_m']], use_container_width=True)
 
         else:
-            st.error("Ralat EPSG: Kod tidak dikenali.")
+            st.error("Kod EPSG salah.")
     except Exception as e:
-        st.error(f"Ralat Pemprosesan: Pastikan kolum CSV adalah STN, E, N. Error: {e}")
+        st.error(f"Ralat: {e}")
 else:
-    st.info("Sila muat naik fail CSV koordinat di sidebar untuk memulakan pemetaan.")
+    st.info("Sila muat naik CSV di sidebar.")
